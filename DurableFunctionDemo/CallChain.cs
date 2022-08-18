@@ -13,6 +13,7 @@ namespace DurableFunctionDemo
             [OrchestrationTrigger] IDurableOrchestrationContext context,
             ILogger log)
         {
+            log.LogWarning("In {functionName}", nameof(CallChainOrchestrator));
             log.LogWarning("Before {functionName}", nameof(Link1));
             var link1 = await context.CallActivityAsync<int>(nameof(Link1), context.GetInput<string>());
             log.LogWarning("Before {functionName}", nameof(Link2));
