@@ -1,12 +1,9 @@
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
-using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace SagaOrchestrator
 {
@@ -29,7 +26,7 @@ namespace SagaOrchestrator
             var seats = new[] { 5, 7 };
             var customerData = "test customer";
             var seatsStatus = await context.CallActivityAsync<SeatsStatus>("BookSeats", seats);
-            var paymentStatus = await context.CallActivityAsync<PaymentStatus>("Pay", seatsStatus.Price);
+            var paymentStatus = await context.CallSubOrchestratorAsync<PaymentStatus>("Pay", seatsStatus.Price);
             var registrationStatus = await context.CallActivityAsync<RegistrationStatus>("RegisterAndNotify", new RegistrationData(seats, paymentStatus.TransactionId, customerData));
 
             return new BookingStatus(true, registrationStatus.OrderId);
@@ -43,10 +40,38 @@ namespace SagaOrchestrator
         }
 
         [FunctionName("Pay")]
-        public static PaymentStatus Pay([ActivityTrigger] decimal price, ILogger log)
+        public static async Task<PaymentStatus> Pay([OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
         {
-            log.LogInformation($"Paying seats {price}$.");
-            return new PaymentStatus(true, new Guid());
+            const string eventName = "payEvent";
+            var price = context.GetInput<decimal>();
+            var result = false;
+            log.LogInformation($"Paying seats {price}$. Raise event '{eventName}'");
+
+            using var timeoutCts = new CancellationTokenSource();
+
+            var expiration = context.CurrentUtcDateTime.AddMinutes(3);
+            var timeoutTask = context.CreateTimer(expiration, timeoutCts.Token);
+
+            var myEventResult =
+                context.WaitForExternalEvent<bool>(eventName);
+
+            var winner = await Task.WhenAny(myEventResult, timeoutTask);
+
+            if (winner == myEventResult)
+            {
+                result = myEventResult.Result;
+            }
+            else
+            {
+                log.LogError("Timeout");
+            }
+
+            if (!timeoutTask.IsCompleted)
+            {
+                timeoutCts.Cancel(); // All pending timers must be complete or canceled before the function exits.
+            }
+
+            return new PaymentStatus(result, result ? new Guid(): Guid.Empty);
         }
 
         [FunctionName("RegisterAndNotify")]
